@@ -18,6 +18,22 @@ const OSSize = ref<number>(4);
 const quantum = ref<number>(5);
 
 const commands = {
+    help: () => {
+        var text = `
+            alloc <size> <burst> - Cria um processo com o tamanho e burst informados\n
+            kill <pid|all>  - Finaliza o processo com o pid informado\n
+            mem - Mostra a tabela de memória física\n
+            shutdown | exit - Desliga o sistema\n
+            fa - Tira um snapshot da fila de aptos\n
+            fah - Mostra o histórico da fila de aptos\n
+            tp <pid?> - Mostra a tabela de páginas do processo com o pid informado ou do SO caso omitido\n
+            ps <pid?> - Mostra informações do processo com o pid informado ou dos processos ativos caso omitido\n
+            psh - Mostra informações dos processos inativos\n
+            pse - Mostra informações do processo em execução\n
+        `
+        return createStdout(text);
+    },
+
     alloc: (args: any) => {
         var size = parseInt(args[1]);
         var burst = parseInt(args[2]);
