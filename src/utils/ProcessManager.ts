@@ -3,6 +3,15 @@ import type { Bytes, PID } from "../@types/common";
 import type { PhysicalMemory } from "./PhysicalMemory";
 import type { VirtualMemory } from "./VirtualMemory";
 
+export interface AptQueueSnapshot {
+    queue: Array<{
+        processPID: PID;
+        arrivedAt: number;
+        waitingTime: number;
+        remainingTime: number;
+    }>;
+    moment: number;
+}
 interface QueueEntry {
     processPID: PID;
     arrivedAt: number;
@@ -17,11 +26,17 @@ export interface ProcessEntry {
     pid: PID;
     size: number;
     burstTime: number;
+    totalWaitingTime: number;
     allocationTime: number;
     remainingTime: number;
     virtualMemory: VirtualMemory;
     fresh: boolean;
     state: "executing" | "finished" | "waiting" | "killed";
+}
+
+export interface OS {
+    size: Bytes;
+    virtualMemory: VirtualMemory;
 }
 
 export class ProcessManager {
@@ -30,11 +45,11 @@ export class ProcessManager {
 
     public errorMessage: string = "";
 
-    private _physicalMemory: PhysicalMemory;
+    public _physicalMemory: PhysicalMemory;
     private _virtualMemoryDefinition: VirtualMemory;
 
-    private _aptQueue: Array<QueueEntry> = [];
-    private _queueHistory: Array<QueueHistoryEntry> = [];
+    public _aptQueue: Array<QueueEntry> = [];
+    public _queueHistory: Array<QueueHistoryEntry> = [];
 
     private _lastGeneratedPID: number | null = null;
 
@@ -47,18 +62,27 @@ export class ProcessManager {
     /**
      * List of all the processes that have been generated
      */
-    private _processes: Array<ProcessEntry>;
+    public _processes: Array<ProcessEntry>;
+
+    public OS: OS;
 
     constructor(
         physicalMemory: PhysicalMemory,
         virtualMemory: VirtualMemory,
-        quantum: number
+        quantum: number,
+        OSSize: Bytes
     ) {
         this._quantum = quantum;
         this._aptQueue = [];
         this._processes = [];
         this._physicalMemory = physicalMemory;
         this._virtualMemoryDefinition = virtualMemory;
+        this.OS = {
+            size: OSSize,
+            virtualMemory: virtualMemory.clone(OSSize),
+        };
+
+        this._physicalMemory.allocateOSMemory(this.OS);
     }
 
     private _systemSpeedMultiplier: number = 1;
@@ -74,7 +98,7 @@ export class ProcessManager {
         this._paused = true;
     }
 
-    private _currentExecutingProcess: {
+    public _currentExecutingProcess: {
         process: ProcessEntry;
         processedTime: number;
     } | null = null;
@@ -96,7 +120,6 @@ export class ProcessManager {
             remainingTime: process.remainingTime,
         });
         process.fresh = false;
-
     }
 
     /**
@@ -104,10 +127,11 @@ export class ProcessManager {
      */
     private executeQueueProcess() {
         let queueEntry = this._aptQueue.shift();
-        if (!queueEntry){
-            this.errorMessage = "Não há processos na fila de aptos, porém o escalonador tentou executar um processo";
+        if (!queueEntry) {
+            this.errorMessage =
+                "Não há processos na fila de aptos, porém o escalonador tentou executar um processo";
             return;
-        };
+        }
         var process = this._processes.find(
             (p) => p.pid === queueEntry?.processPID
         );
@@ -129,7 +153,12 @@ export class ProcessManager {
         process.state = "executing";
         this._physicalMemory.allocateMemory(
             process,
-            this._processes.filter((p) => p.state !== "killed" && p.state !== "finished" && p.remainingTime != p.burstTime),
+            this._processes.filter(
+                (p) =>
+                    p.state !== "killed" &&
+                    p.state !== "finished" &&
+                    p.remainingTime != p.burstTime
+            ),
             process.remainingTime == process.burstTime ? "partial" : "full"
         );
     }
@@ -211,6 +240,13 @@ export class ProcessManager {
         if (!this._currentExecutingProcess && this._aptQueue.length > 0)
             this.executeQueueProcess();
 
+        //We increment the totalWaitingTime of all processes in the queue
+        this._aptQueue.forEach((p) => {
+            var process = this._processes.find((a) => a.pid === p.processPID);
+            if (!process) return;
+            process.totalWaitingTime++;
+        });
+
         this.timePassed++;
 
         if (!this._paused)
@@ -228,13 +264,13 @@ export class ProcessManager {
         return this.terminateProcess(pid);
     }
 
-    public killAll(){
-        var pids: PID[] = []
+    public killAll() {
+        var pids: PID[] = [];
         this._processes.forEach((p) => {
             if (p.state == "killed" || p.state == "finished") return;
-            pids.push(p.pid)
+            pids.push(p.pid);
             this.terminateProcess(p.pid);
-        })
+        });
         return pids;
     }
 
@@ -245,9 +281,8 @@ export class ProcessManager {
     ): PID | null {
         if (size > this._virtualMemoryDefinition.totalSize) {
             console.log("Process size is bigger than the virtual memory size");
-            this.errorMessage = 
-                "Processo com tamanho maior que o tamanho da memória virtual"
-            ;
+            this.errorMessage =
+                "Processo com tamanho maior que o tamanho da memória virtual";
             return null;
         }
         let pid = this.newPID();
@@ -255,6 +290,7 @@ export class ProcessManager {
             pid: pid,
             size,
             burstTime,
+            totalWaitingTime: 0,
             allocationTime: arrival ?? this.timePassed,
             remainingTime: burstTime,
             fresh: true,
@@ -263,4 +299,37 @@ export class ProcessManager {
         });
         return pid;
     }
+
+    public getAptQueueSnapshot(): AptQueueSnapshot {
+        const snapshot: AptQueueSnapshot = {
+            moment: this.timePassed,
+            queue: this._aptQueue.map((item) => ({
+                arrivedAt: item.arrivedAt,
+                processPID: item.processPID,
+                remainingTime:
+                    this._processes.find((p) => p.pid == item.processPID)
+                        ?.remainingTime ?? 0,
+                waitingTime: this.timePassed - item.arrivedAt,
+            })),
+        };
+        return snapshot;
+    }
+
+    public getProcessInfo(pid: PID): ProcessEntry | null {
+        var process = this._processes.find((p) => p.pid === pid);
+        if (!process) {
+            this.errorMessage = `Processo ${pid} não encontrado`;
+            return null;
+        }
+        return process;
+    }
+
+    public getActiveProcesses(): ProcessEntry[] {
+        return this._processes.filter(
+            (p) => p.state !== "killed" && p.state !== "finished"
+        );
+    }
+
+
+
 }

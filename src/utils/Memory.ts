@@ -14,7 +14,7 @@ export abstract class Memory {
     /**
      * The number of bits that are used to represent the offset
      */
-    protected _offset: Bits;
+    public _offset: Bits;
 
     /**
      * The number of bits that are used to represent the physical addresses

@@ -1,7 +1,7 @@
 import type { Bits, Bytes, GB, KB, MB } from "@/@types/common";
 import { Memory } from "./Memory";
 import type { VirtualMemory } from "./VirtualMemory";
-import type { ProcessEntry } from "./ProcessManager";
+import type { OS, ProcessEntry } from "./ProcessManager";
 
 interface PhysicalMemoryFrameBlockAddress {
     address: string;
@@ -18,7 +18,7 @@ export class PhysicalMemory extends Memory {
     /**
      * The physical memory table
      */
-    private _frameTable: Array<PhysicalMemoryFrameBlock> = [];
+    public _frameTable: Array<PhysicalMemoryFrameBlock> = [];
 
     /**
      * **All values in bytes**
@@ -51,6 +51,44 @@ export class PhysicalMemory extends Memory {
         return this._frameTable.find((frame) => !frame.active) ?? null;
     }
 
+    public allocateOSMemory(OS: OS) {
+        var osLastPageSize =
+            OS.virtualMemory._pageSize -
+            (OS.virtualMemory.pageTable.length * this._pageSize -
+                OS.virtualMemory.processSize);
+        OS.virtualMemory.pageTable.forEach((pageBlock, i) => {
+            //If the page is already mapped we skip it (occurs when the process is prempted and some pages are left in memory)
+            if (pageBlock.mappedFrame != null) return;
+
+            var frame = this.findFreeFrame();
+            if (frame == null) {
+                console.log("No free memory to load the full OS");
+                return;
+            }
+
+            //Put the data on each physical address and map it in the page table
+            if (i == OS.virtualMemory.pageTable.length - 1) {
+                frame.adresses.forEach((address, i) => {
+                    if (i > osLastPageSize - 1) return;
+                    address.data = "OS";
+                });
+                pageBlock.addresses.forEach((address, i) => {
+                    if (i > osLastPageSize - 1) return;
+                    address.valid = 1;
+                });
+            } else {
+                frame.adresses.forEach((address, i) => {
+                    address.data = "OS";
+                });
+                pageBlock.addresses.forEach((address, i) => {
+                    address.valid = 1;
+                });
+            }
+            frame.active = true;
+            pageBlock.mappedFrame = frame.id;
+        });
+    }
+
     public allocateMemory(
         process: ProcessEntry,
         activeProcesses: ProcessEntry[],
@@ -60,12 +98,6 @@ export class PhysicalMemory extends Memory {
             process.virtualMemory._pageSize -
             (process.virtualMemory.pageTable.length * this._pageSize -
                 process.virtualMemory.processSize);
-        console.log(
-            "Allocating memory for process",
-            process.pid,
-            allocationType,
-            processLastPageSize
-        );
 
         var freedMemory = false;
         process.virtualMemory.pageTable.forEach((pageBlock, i) => {
@@ -78,20 +110,25 @@ export class PhysicalMemory extends Memory {
             var frame = this.findFreeFrame();
 
             //If there is no free memory to use, we need to deallocate some memory from other processes
-            if (frame == null && !freedMemory){
-                var neededFrames = Math.ceil(process.size - (i * this._pageSize) / this._pageSize);
+            if (frame == null && !freedMemory) {
+                var neededFrames = Math.ceil(
+                    process.size - (i * this._pageSize) / this._pageSize
+                );
                 activeProcesses.forEach((p, x) => {
+                    //We don't deallocate memory from the process that is being allocated
+                    if (process.pid == p.pid) return;
+                    //If we already deallocated enough memory we stop
                     if (x > neededFrames - 1) return;
                     this.deallocateMemory(p, "full");
                 });
                 freedMemory = true;
                 frame = this.findFreeFrame();
-            };
+            }
 
             if (frame == null) {
                 console.log("No free memory to load the full process");
                 return;
-            };
+            }
 
             //Put the data on each physical address and map it in the page table
             if (i == process.virtualMemory.pageTable.length - 1) {
